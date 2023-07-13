@@ -1,0 +1,4 @@
+pynwb>=2.3.3
+nwbinspector>=0.4.29
+natsort>=8.4.0
+scipy>=1.11.1
