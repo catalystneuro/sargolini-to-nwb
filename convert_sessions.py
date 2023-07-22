@@ -7,21 +7,22 @@ from typing import List
 from uuid import uuid4
 
 import numpy as np
-import nwbinspector.nwbinspector
 from dateutil import tz
 from hdmf.backends.hdf5 import H5DataIO
 from natsort import natsorted
+from nwbinspector import inspect_all
 from nwbinspector.inspector_tools import save_report, format_messages
 from pynwb import NWBFile, NWBHDF5IO
 from pynwb.behavior import Position
+from pynwb.ecephys import LFP, ElectricalSeries
 from pynwb.file import Subject
 from scipy.io import loadmat
 
 
 def convert_sessions_to_nwb(
-        folder_path: str,
-        nwbfiles_folder_path: str,
-        verbose: bool = True,
+    folder_path: str,
+    nwbfiles_folder_path: str,
+    verbose: bool = True,
 ):
     if not Path(nwbfiles_folder_path).exists():
         os.makedirs(nwbfiles_folder_path)
@@ -41,6 +42,9 @@ def convert_sessions_to_nwb(
 
             # Add position to file
             add_position_to_nwb(nwbfile=nwbfile)
+
+            # Add EEG as ElectricalSeries
+            add_eeg_to_nwb(nwbfile=nwbfile)
 
             # Write the file
             with NWBHDF5IO(nwbfile_path, "w") as io:
@@ -102,6 +106,7 @@ def start_nwb(subject_id: str, session_id: str) -> NWBFile:
         session_id=session_id,
         related_publications="https://doi.org/10.1126/science.1125572",
         institution="Centre for the Biology of Memory, Norwegian University of Science and Technology",
+        lab="Moser",
         experimenter="Sargolini, Francesca",
         keywords=["medial entorhinal cortex", "spike times", "position"],
     )
@@ -205,6 +210,74 @@ def add_position_to_nwb(nwbfile: NWBFile):
     behavior_module.add(position)
 
 
+def add_eeg_to_nwb(nwbfile: NWBFile):
+    file_paths = list(
+        Path(folder_path).glob(
+            f"{nwbfile.subject.subject_id}-{nwbfile.session_id}*.mat"
+        )
+    )
+    raw_eeg_file_path = [file for file in file_paths if "egf" in file.name.lower()]
+
+    if not raw_eeg_file_path:
+        return
+
+    device = nwbfile.create_device(
+        name="EEG", description="The device used to record EEG signals."
+    )
+
+    electrode_group = nwbfile.create_electrode_group(
+        name="ElectrodeGroup",
+        description="The name of the ElectrodeGroup this electrode is a part of.",
+        device=device,
+        location="MEC",
+    )
+
+    nwbfile.add_electrode(
+        group=electrode_group,
+        location="MEC",
+    )
+
+    electrode_table_region = nwbfile.create_electrode_table_region(
+        region=[0],
+        description="all electrodes",
+    )
+
+    mat = read_mat_file(file_path=raw_eeg_file_path[0])
+
+    nwbfile.add_acquisition(
+        ElectricalSeries(
+            name="ElectricalSeries",
+            description="The EEG signals from one electrode amplified 8000-10000 times, lowpass-filtered at 500 Hz (single pole), and stored at 4800 Hz (16 bits/sample).",
+            data=H5DataIO(mat["EEG"], compression=True),
+            electrodes=electrode_table_region,
+            rate=float(mat["Fs"]),
+            starting_time=0.0,  # we don't have the timestamps for EEG, only Fs
+            conversion=1e-6,  # EEG is typically in microvolts (e.g. max original value is 736.0)
+        )
+    )
+
+    filtered_eeg_file_path = [file for file in file_paths if "eeg" in file.name.lower()]
+    if filtered_eeg_file_path:
+        mat = read_mat_file(file_path=filtered_eeg_file_path[0])
+
+        lfp = LFP()
+        lfp.create_electrical_series(
+            name="ElectricalSeriesLFP",
+            description="The EEG signals from one electrode stored at 250 Hz.",
+            data=H5DataIO(mat["EEG"], compression=True),
+            electrodes=electrode_table_region,
+            rate=float(mat["Fs"]),
+            starting_time=0.0,  # we don't have the timestamps for EEG, only Fs
+            conversion=1e-6,
+        )
+
+        # Add the LFP object to the NWBFile
+        ecephys_module = nwbfile.create_processing_module(
+            name="ecephys", description="Processed electrical series data."
+        )
+        ecephys_module.add(lfp)
+
+
 def read_mat_file(file_path):
     return loadmat(file_path, squeeze_me=True)
 
@@ -220,7 +293,7 @@ if __name__ == "__main__":
     )
 
     # Inspect files
-    results = list(nwbinspector.inspect_all(folder_path))
+    results = list(inspect_all(folder_path))
     report_path = Path(nwbfiles_folder_path) / "inspector_result.txt"
     save_report(
         report_file_path=report_path,
