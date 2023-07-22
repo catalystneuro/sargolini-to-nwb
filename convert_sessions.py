@@ -20,9 +20,9 @@ from scipy.io import loadmat
 
 
 def convert_sessions_to_nwb(
-        folder_path: str,
-        nwbfiles_folder_path: str,
-        verbose: bool = True,
+    folder_path: str,
+    nwbfiles_folder_path: str,
+    verbose: bool = True,
 ):
     if not Path(nwbfiles_folder_path).exists():
         os.makedirs(nwbfiles_folder_path)
@@ -222,8 +222,7 @@ def add_eeg_to_nwb(nwbfile: NWBFile):
         return
 
     device = nwbfile.create_device(
-        name="EEG",
-        description="The device used to record EEG signals."
+        name="EEG", description="The device used to record EEG signals."
     )
 
     electrode_group = nwbfile.create_electrode_group(
@@ -244,37 +243,39 @@ def add_eeg_to_nwb(nwbfile: NWBFile):
     )
 
     mat = read_mat_file(file_path=raw_eeg_file_path[0])
-    lfp = LFP()
-    lfp.create_electrical_series(
-        name="ElectricalSeriesLFP",
-        description="The EEG signals from one electrode amplified 8000-10000 times, lowpass-filtered at 500 Hz (single pole), and stored at 4800 Hz (16 bits/sample).",
-        data=H5DataIO(mat["EEG"], compression=True),
-        electrodes=electrode_table_region,
-        rate=float(mat["Fs"]),
-        starting_time=0.0,  # we don't have the timestamps for EEG, only Fs
-        conversion=1e-6,  # EEG is typically in microvolts (e.g. max original value is 736.0)
-    )
 
-    # Add the LFP object to the NWBFile
-    ecephys_module = nwbfile.create_processing_module(
-        name="ecephys", description="Processed electrical series data."
+    nwbfile.add_acquisition(
+        ElectricalSeries(
+            name="ElectricalSeries",
+            description="The EEG signals from one electrode amplified 8000-10000 times, lowpass-filtered at 500 Hz (single pole), and stored at 4800 Hz (16 bits/sample).",
+            data=H5DataIO(mat["EEG"], compression=True),
+            electrodes=electrode_table_region,
+            rate=float(mat["Fs"]),
+            starting_time=0.0,  # we don't have the timestamps for EEG, only Fs
+            conversion=1e-6,  # EEG is typically in microvolts (e.g. max original value is 736.0)
+        )
     )
-    ecephys_module.add(lfp)
 
     filtered_eeg_file_path = [file for file in file_paths if "eeg" in file.name.lower()]
     if filtered_eeg_file_path:
         mat = read_mat_file(file_path=filtered_eeg_file_path[0])
-        nwbfile.add_acquisition(
-            ElectricalSeries(
-                name="ElectricalSeries",
-                description="The EEG signals from one electrode stored at 250 Hz.",
-                data=H5DataIO(mat["EEG"], compression=True),
-                electrodes=electrode_table_region,
-                rate=float(mat["Fs"]),
-                starting_time=0.0,  # we don't have the timestamps for EEG, only Fs
-                conversion=1e-6,
-            )
+
+        lfp = LFP()
+        lfp.create_electrical_series(
+            name="ElectricalSeriesLFP",
+            description="The EEG signals from one electrode stored at 250 Hz.",
+            data=H5DataIO(mat["EEG"], compression=True),
+            electrodes=electrode_table_region,
+            rate=float(mat["Fs"]),
+            starting_time=0.0,  # we don't have the timestamps for EEG, only Fs
+            conversion=1e-6,
         )
+
+        # Add the LFP object to the NWBFile
+        ecephys_module = nwbfile.create_processing_module(
+            name="ecephys", description="Processed electrical series data."
+        )
+        ecephys_module.add(lfp)
 
 
 def read_mat_file(file_path):
