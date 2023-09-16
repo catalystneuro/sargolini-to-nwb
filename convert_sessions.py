@@ -3,10 +3,11 @@ import re
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from uuid import uuid4
 
 import numpy as np
+import pandas as pd
 from dateutil import tz
 from hdmf.backends.hdf5 import H5DataIO
 from natsort import natsorted
@@ -22,10 +23,15 @@ from scipy.io import loadmat
 def convert_sessions_to_nwb(
     folder_path: str,
     nwbfiles_folder_path: str,
+    cell_layers_file_path: Optional[str] = None,
     verbose: bool = True,
 ):
     if not Path(nwbfiles_folder_path).exists():
         os.makedirs(nwbfiles_folder_path)
+
+    units_metadata = None
+    if cell_layers_file_path:
+        units_metadata = load_units_metadata(file_path=cell_layers_file_path)
 
     all_sessions = collect_sessions_from_folder(folder_path=folder_path)
     for subject_id, sessions_per_subject in all_sessions.items():
@@ -39,6 +45,15 @@ def convert_sessions_to_nwb(
 
             # Add units from file
             add_units_to_nwb(nwbfile=nwbfile, unit_ids=cell_ids)
+
+            if units_metadata is not None:
+                add_units_metadata(
+                    nwbfile=nwbfile,
+                    units_metadata=units_metadata[
+                        (units_metadata["RAT"].astype(str) == subject_id)
+                        & (units_metadata["session_id"].astype(str) == session_id)
+                    ],
+                )
 
             # Add position to file
             add_position_to_nwb(nwbfile=nwbfile)
@@ -282,14 +297,62 @@ def read_mat_file(file_path):
     return loadmat(file_path, squeeze_me=True)
 
 
+def load_units_metadata(file_path):
+    df = pd.read_excel(file_path)
+    df["unit_name"] = df.apply(lambda row: f"t{row['Tetrode']}c{row['Unit']}", axis=1)
+    df["session_id"] = df["Session(s)"].apply(lambda row: row.split("\\")[-1])
+    return df
+
+
+def add_units_metadata(nwbfile: NWBFile, units_metadata: pd.DataFrame):
+    unit_names = nwbfile.units["unit_name"][:]
+    metadata = (
+        units_metadata[units_metadata["unit_name"].isin(unit_names)]
+        .sort_values(by="unit_name")
+        .set_index("unit_name")
+        .reindex(unit_names)
+    )
+
+    if metadata.empty:
+        return
+
+    nwbfile.add_unit_column(
+        name="histology",
+        description="The layer of MEC of the grid cell.",
+        data=metadata["histology_old"].fillna(value="").values.tolist(),
+    )
+
+    nwbfile.add_unit_column(
+        name="hemisphere",
+        description="Indicates which hemisphere the electrodes were inserted above MEC.",
+        data=metadata["hemisphere"]
+        .map(dict(L="Left", R="Right"))
+        .fillna(value="")
+        .values.tolist(),
+    )
+
+    # convert "depth" to meters from micrometers
+    depth_in_meters = metadata["depth"] * 1e-6
+    nwbfile.add_unit_column(
+        name="depth",
+        description="Indicates the depth of the inserted electrodes in meters.",
+        data=depth_in_meters.values.tolist(),
+    )
+
+
 if __name__ == "__main__":
     # The path to the folder that contains the .mat files
     folder_path = "/Volumes/t7-ssd/8F6BE356-3277-475C-87B1-C7A977632DA7_1/all_data"
     # The path to fhe folder where the nwb files are created
     nwbfiles_folder_path = "/Volumes/t7-ssd/sargolini_to_nwb/nwbfiles/all_data"
 
+    # The path to the Excel file that contains the cell layers
+    cell_layers_file_path = "/Volumes/t7-ssd/sargolini_to_nwb/A423437F-71E1-4396-9B0B-056E00C23254_1/list_of_cells_and_layers.xlsx"
+
     convert_sessions_to_nwb(
-        folder_path=folder_path, nwbfiles_folder_path=nwbfiles_folder_path
+        folder_path=folder_path,
+        nwbfiles_folder_path=nwbfiles_folder_path,
+        cell_layers_file_path=cell_layers_file_path,
     )
 
     # Inspect files
@@ -297,8 +360,6 @@ if __name__ == "__main__":
     report_path = Path(nwbfiles_folder_path) / "inspector_result.txt"
     save_report(
         report_file_path=report_path,
-        formatted_messages=format_messages(
-            results,
-            levels=["importance", "file_path"],
-        ),
+        formatted_messages=format_messages(results, levels=["importance", "file_path"]),
+        overwrite=True,
     )
